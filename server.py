@@ -59,9 +59,10 @@ def sharadar_fundamentals(
     if not api_key:
         return {"error": "Sharadar API key is not configured"}
 
+    
     url = "https://api.sharadar.com/v1.0/data/fundamentals"
 
-        params = {
+    params = {
         "ticker": ticker,
         "dimension": dimension,
         "format": "json",
