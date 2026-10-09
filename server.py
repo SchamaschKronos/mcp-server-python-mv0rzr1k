@@ -50,9 +50,10 @@ def sharadar_fundamentals(
         return {"error": "Invalid ticker symbol"}
 
     if dimension not in ("MRY", "MRQ", "ARY", "ARQ"):
-    return {
-        "error": "Dimension must be MRY, MRQ, ARY or ARQ"
-    }
+        return {
+            "error": "Dimension must be MRY, MRQ, ARY or ARQ"
+        }
+    
 
     if not 1 <= limit <= 20:
         return {"error": "Limit must be between 1 and 20"}
