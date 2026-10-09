@@ -1,3 +1,4 @@
+
 from mcp.server.fastmcp import FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
 from starlette.requests import Request
@@ -32,19 +33,20 @@ def hello(name: str) -> str:
 def sharadar_fundamentals(
     ticker: str,
     dimension: str = "MRY",
-    limit: int = 10,
+    limit: int = 1000,
 ) -> dict:
     """Retrieve historical financial statements from Sharadar.
 
     Args:
-        ticker: US stock symbol, e.g. AAPL or MSFT.
-        dimension: MRY for annual, MRQ for quarterly.
-        limit: Maximum number of observations, 1 to 20.
+        ticker: Historical Sharadar stock symbol, e.g. DELL1.
+        dimension: MRY, MRQ, ARY or ARQ.
+        limit: Maximum observations to retrieve, 1 to 5000.
+               Results are fetched in pages of up to 500.
     """
     import re
 
     ticker = ticker.strip().upper()
-    dimension = dimension.upper()
+    dimension = dimension.strip().upper()
 
     if not re.fullmatch(r"[A-Z0-9.^-]{1,20}", ticker):
         return {"error": "Invalid ticker symbol"}
@@ -53,50 +55,84 @@ def sharadar_fundamentals(
         return {
             "error": "Dimension must be MRY, MRQ, ARY or ARQ"
         }
-    
 
-    if not 1 <= limit <= 20:
-        return {"error": "Limit must be between 1 and 20"}
+    if not 1 <= limit <= 5000:
+        return {"error": "Limit must be between 1 and 5000"}
 
     api_key = os.environ.get("SHARADAR_API_KEY")
     if not api_key:
         return {"error": "Sharadar API key is not configured"}
 
-    
     url = "https://api.sharadar.com/v1.0/data/fundamentals"
 
     params = {
         "ticker": ticker,
         "dimension": dimension,
         "format": "json",
-        "sort": "calendardate.desc",
-        "limit": limit,
+        "sort": "date.desc",
         "api_key": api_key,
     }
 
+    records = []
+    page_size = 500
+
     try:
         with httpx.Client(timeout=30.0) as client:
-            response = client.get(
-                url,
-                params=params,
-            )
-            response.raise_for_status()
-            data = response.json()
+            while len(records) < limit:
+                remaining = limit - len(records)
+                params["limit"] = min(page_size, remaining)
+                params["skip"] = len(records)
+
+                response = client.get(url, params=params)
+                response.raise_for_status()
+                page = response.json()
+
+                if not isinstance(page, dict):
+                    return {
+                        "error": "Unexpected Sharadar response",
+                        "records_retrieved": len(records),
+                        "complete": False,
+                    }
+
+                rows = page.get("data")
+                if not isinstance(rows, list):
+                    return {
+                        "error": "Invalid Sharadar data structure",
+                        "records_retrieved": len(records),
+                        "complete": False,
+                    }
+
+                records.extend(rows)
+
+                if len(rows) < params["limit"]:
+                    break
 
         return {
             "ticker": ticker,
             "dimension": dimension,
             "source": "Sharadar",
-            "data": data,
+            "data": {
+                "count": len(records),
+                "data": records,
+            },
+            "complete": len(records) < limit,
+            "limit_reached": len(records) >= limit,
         }
 
     except httpx.HTTPStatusError as exc:
         return {
             "error": "Sharadar request failed",
             "status_code": exc.response.status_code,
+            "records_retrieved": len(records),
+            "complete": False,
         }
     except (httpx.RequestError, ValueError):
-        return {"error": "Unable to retrieve Sharadar data"}
+        return {
+            "error": "Unable to retrieve Sharadar data",
+            "records_retrieved": len(records),
+            "complete": False,
+        }
+
 
 @mcp.tool()
 def sharadar_tickers(
@@ -104,25 +140,36 @@ def sharadar_tickers(
     name: str = "",
     cik: str = "",
     limit: int = 100,
+    permaticker: str = "",
 ) -> dict:
     """Search Sharadar TICKERS reference data.
 
-    Returns historical company identifiers including permaticker.
+    Supports historical ticker, issuer name, CIK and permaticker.
+    Name and CIK searches are filtered locally using the
+    fundamentals security master.
+
+    Returns matching historical identifiers and search completeness.
     """
     import re
 
     ticker = ticker.strip().upper()
     name = name.strip()
     cik = cik.strip()
+    permaticker = permaticker.strip()
 
-    if not any((ticker, name, cik)):
-        return {"error": "Provide ticker, name or cik"}
+    if not any((ticker, name, cik, permaticker)):
+        return {
+            "error": "Provide ticker, name, cik or permaticker"
+        }
 
     if ticker and not re.fullmatch(r"[A-Z0-9.^-]{1,20}", ticker):
         return {"error": "Invalid ticker"}
 
     if cik and not re.fullmatch(r"[0-9]{1,10}", cik):
         return {"error": "Invalid CIK"}
+
+    if permaticker and not re.fullmatch(r"[0-9]+", permaticker):
+        return {"error": "Invalid permaticker"}
 
     if not 1 <= limit <= 100:
         return {"error": "Limit must be between 1 and 100"}
@@ -133,39 +180,109 @@ def sharadar_tickers(
 
     params = {
         "format": "json",
-        "limit": limit,
+        "table": "fundamentals",
         "api_key": api_key,
     }
 
     if ticker:
         params["ticker"] = ticker
-    if name:
-        params["name"] = name
-    if cik:
-        params["secfilings"] = cik
+
+    if permaticker:
+        params["permaticker"] = permaticker
+
+    url = "https://api.sharadar.com/v1.0/data/tickers"
+
+    matches = []
+    scanned = 0
+    page_size = 1000
+    max_pages = 50
+    exhausted = False
 
     try:
         with httpx.Client(timeout=30.0) as client:
-            response = client.get(
-                "https://api.sharadar.com/v1.0/data/tickers",
-                params=params,
-            )
-            response.raise_for_status()
-            data = response.json()
+            for page_number in range(max_pages):
+                params["limit"] = page_size
+                params["skip"] = page_number * page_size
+
+                response = client.get(url, params=params)
+                response.raise_for_status()
+                page = response.json()
+
+                if not isinstance(page, dict):
+                    return {
+                        "error": "Unexpected TICKERS response",
+                        "records_scanned": scanned,
+                        "complete": False,
+                    }
+
+                rows = page.get("data")
+                if not isinstance(rows, list):
+                    return {
+                        "error": "Invalid TICKERS data structure",
+                        "records_scanned": scanned,
+                        "complete": False,
+                    }
+
+                scanned += len(rows)
+
+                for row in rows:
+                    if not isinstance(row, dict):
+                        continue
+
+                    if name:
+                        issuer = str(row.get("name") or "")
+                        if name.casefold() not in issuer.casefold():
+                            continue
+
+                    if cik:
+                        sec_url = str(row.get("secfilings") or "")
+                        found = re.search(
+                            r"(?:CIK=|/data/)([0-9]{1,10})(?:[^0-9]|$)",
+                            sec_url,
+                            flags=re.IGNORECASE,
+                        )
+                        if not found:
+                            continue
+
+                        if int(found.group(1)) != int(cik):
+                            continue
+
+                    matches.append(row)
+
+                if len(rows) < page_size:
+                    exhausted = True
+                    break
 
         return {
             "source": "Sharadar TICKERS",
-            "data": data,
+            "data": {
+                "count": min(len(matches), limit),
+                "data": matches[:limit],
+            },
+            "records_scanned": scanned,
+            "total_matches_found": len(matches),
+            "complete": exhausted,
+            "results_truncated": len(matches) > limit,
+            "cik_verification": (
+                "Matched against SEC filings URL"
+                if cik else "Not requested"
+            ),
         }
 
     except httpx.HTTPStatusError as exc:
         return {
             "error": "Sharadar TICKERS request failed",
             "status_code": exc.response.status_code,
+            "records_scanned": scanned,
+            "complete": False,
         }
 
     except (httpx.RequestError, ValueError):
-        return {"error": "Unable to retrieve TICKERS data"}
+        return {
+            "error": "Unable to retrieve TICKERS data",
+            "records_scanned": scanned,
+            "complete": False,
+        }
 
 
 @mcp.tool()
@@ -246,6 +363,7 @@ def sharadar_prices(
         }
     except (httpx.RequestError, ValueError):
         return {"error": "Unable to retrieve Sharadar prices"}
+
 
 # custom_route bypasses auth — use only for public endpoints
 @mcp.custom_route("/health", methods=["GET"])
