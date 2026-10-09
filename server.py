@@ -61,12 +61,13 @@ def sharadar_fundamentals(
 
     url = "https://api.sharadar.com/v1.0/data/fundamentals"
 
-    params = {
+        params = {
         "ticker": ticker,
         "dimension": dimension,
         "format": "json",
         "sort": "calendardate.desc",
         "limit": limit,
+        "api_key": api_key,
     }
 
     try:
@@ -74,7 +75,6 @@ def sharadar_fundamentals(
             response = client.get(
                 url,
                 params=params,
-                headers={"x-api-key": api_key},
             )
             response.raise_for_status()
             data = response.json()
