@@ -49,8 +49,10 @@ def sharadar_fundamentals(
     if not re.fullmatch(r"[A-Z0-9.^-]{1,20}", ticker):
         return {"error": "Invalid ticker symbol"}
 
-    if dimension not in ("MRY", "MRQ"):
-        return {"error": "Dimension must be MRY or MRQ"}
+    if dimension not in ("MRY", "MRQ", "ARY", "ARQ"):
+    return {
+        "error": "Dimension must be MRY, MRQ, ARY or ARQ"
+    }
 
     if not 1 <= limit <= 20:
         return {"error": "Limit must be between 1 and 20"}
@@ -95,6 +97,74 @@ def sharadar_fundamentals(
     except (httpx.RequestError, ValueError):
         return {"error": "Unable to retrieve Sharadar data"}
 
+@mcp.tool()
+def sharadar_tickers(
+    ticker: str = "",
+    name: str = "",
+    cik: str = "",
+    limit: int = 100,
+) -> dict:
+    """Search Sharadar TICKERS reference data.
+
+    Returns historical company identifiers including permaticker.
+    """
+    import re
+
+    ticker = ticker.strip().upper()
+    name = name.strip()
+    cik = cik.strip()
+
+    if not any((ticker, name, cik)):
+        return {"error": "Provide ticker, name or cik"}
+
+    if ticker and not re.fullmatch(r"[A-Z0-9.^-]{1,20}", ticker):
+        return {"error": "Invalid ticker"}
+
+    if cik and not re.fullmatch(r"[0-9]{1,10}", cik):
+        return {"error": "Invalid CIK"}
+
+    if not 1 <= limit <= 100:
+        return {"error": "Limit must be between 1 and 100"}
+
+    api_key = os.environ.get("SHARADAR_API_KEY")
+    if not api_key:
+        return {"error": "Sharadar API key is not configured"}
+
+    params = {
+        "format": "json",
+        "limit": limit,
+        "api_key": api_key,
+    }
+
+    if ticker:
+        params["ticker"] = ticker
+    if name:
+        params["name"] = name
+    if cik:
+        params["secfilings"] = cik
+
+    try:
+        with httpx.Client(timeout=30.0) as client:
+            response = client.get(
+                "https://api.sharadar.com/v1.0/data/tickers",
+                params=params,
+            )
+            response.raise_for_status()
+            data = response.json()
+
+        return {
+            "source": "Sharadar TICKERS",
+            "data": data,
+        }
+
+    except httpx.HTTPStatusError as exc:
+        return {
+            "error": "Sharadar TICKERS request failed",
+            "status_code": exc.response.status_code,
+        }
+
+    except (httpx.RequestError, ValueError):
+        return {"error": "Unable to retrieve TICKERS data"}
 
 
 @mcp.tool()
