@@ -5,6 +5,7 @@ from starlette.responses import JSONResponse, Response
 from starlette.types import ASGIApp, Receive, Scope, Send
 import hmac
 import os
+import httpx
 
 MCP_API_TOKEN = os.environ.get("MCP_API_TOKEN")
 RENDER_EXTERNAL_HOSTNAME = os.environ.get("RENDER_EXTERNAL_HOSTNAME")
@@ -26,6 +27,72 @@ def hello(name: str) -> str:
     """Say hello to someone."""
     return f"Hello, {name}!"
 
+
+@mcp.tool()
+def sharadar_fundamentals(
+    ticker: str,
+    dimension: str = "MRY",
+    limit: int = 10,
+) -> dict:
+    """Retrieve historical financial statements from Sharadar.
+
+    Args:
+        ticker: US stock symbol, e.g. AAPL or MSFT.
+        dimension: MRY for annual, MRQ for quarterly.
+        limit: Maximum number of observations, 1 to 20.
+    """
+    import re
+
+    ticker = ticker.strip().upper()
+    dimension = dimension.upper()
+
+    if not re.fullmatch(r"[A-Z0-9.^-]{1,20}", ticker):
+        return {"error": "Invalid ticker symbol"}
+
+    if dimension not in ("MRY", "MRQ"):
+        return {"error": "Dimension must be MRY or MRQ"}
+
+    if not 1 <= limit <= 20:
+        return {"error": "Limit must be between 1 and 20"}
+
+    api_key = os.environ.get("SHARADAR_API_KEY")
+    if not api_key:
+        return {"error": "Sharadar API key is not configured"}
+
+    url = "https://api.sharadar.com/v1.0/data/fundamentals"
+
+    params = {
+        "ticker": ticker,
+        "dimension": dimension,
+        "format": "json",
+        "sort": "calendardate.desc",
+        "limit": limit,
+    }
+
+    try:
+        with httpx.Client(timeout=30.0) as client:
+            response = client.get(
+                url,
+                params=params,
+                headers={"x-api-key": api_key},
+            )
+            response.raise_for_status()
+            data = response.json()
+
+        return {
+            "ticker": ticker,
+            "dimension": dimension,
+            "source": "Sharadar",
+            "data": data,
+        }
+
+    except httpx.HTTPStatusError as exc:
+        return {
+            "error": "Sharadar request failed",
+            "status_code": exc.response.status_code,
+        }
+    except (httpx.RequestError, ValueError):
+        return {"error": "Unable to retrieve Sharadar data"}
 
 # custom_route bypasses auth — use only for public endpoints
 @mcp.custom_route("/health", methods=["GET"])
